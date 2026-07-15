@@ -496,6 +496,48 @@ func verifyZeroTrustToken(tokenString, secret string) (*zeroTrustClaims, error) 
 	return claims, nil
 }
 
+// joinZeroTrustDefaultWorkspace gives enterprise SSO users a useful first
+// destination without running the consumer onboarding questionnaire. Existing
+// membership and onboarding timestamps are preserved, so repeated logins are
+// idempotent and users remain free to create additional workspaces.
+func (h *Handler) joinZeroTrustDefaultWorkspace(ctx context.Context, user db.User) (db.User, error) {
+	slug := h.cfg.ZeroTrustDefaultWorkspaceSlug
+	if slug == "" {
+		return user, nil
+	}
+
+	workspace, err := h.Queries.GetWorkspaceBySlug(ctx, slug)
+	if err != nil {
+		return db.User{}, fmt.Errorf("get zero trust default workspace %q: %w", slug, err)
+	}
+
+	_, err = h.Queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
+		UserID:      user.ID,
+		WorkspaceID: workspace.ID,
+	})
+	if isNotFound(err) {
+		_, err = h.Queries.CreateMember(ctx, db.CreateMemberParams{
+			WorkspaceID: workspace.ID,
+			UserID:      user.ID,
+			Role:        "member",
+		})
+		if err != nil && !isUniqueViolation(err) {
+			return db.User{}, fmt.Errorf("add zero trust workspace member: %w", err)
+		}
+		h.notifyDaemonWorkspacesChanged(uuidToString(user.ID))
+	} else if err != nil {
+		return db.User{}, fmt.Errorf("get zero trust workspace membership: %w", err)
+	}
+
+	if !user.OnboardedAt.Valid {
+		user, err = h.Queries.MarkUserOnboarded(ctx, user.ID)
+		if err != nil {
+			return db.User{}, fmt.Errorf("mark zero trust user onboarded: %w", err)
+		}
+	}
+	return user, nil
+}
+
 // ZeroTrustLogin exchanges the gateway-signed identity header for Multica's
 // own session cookie. X-Zt-Authorization is injected by Baidu's zero-trust
 // gateway and is never accepted without verifying its per-domain HS256 key.
@@ -548,6 +590,13 @@ func (h *Handler) ZeroTrustLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		user = updated
+	}
+
+	user, err = h.joinZeroTrustDefaultWorkspace(r.Context(), user)
+	if err != nil {
+		slog.Error("zero trust default workspace join failed", append(logger.RequestAttrs(r), "error", err, "user_id", uuidToString(user.ID))...)
+		writeError(w, http.StatusInternalServerError, "failed to join team workspace")
+		return
 	}
 
 	tokenString, err := h.issueJWT(user)
