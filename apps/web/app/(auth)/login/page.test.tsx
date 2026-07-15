@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
@@ -22,8 +22,7 @@ function createWrapper() {
 }
 
 const {
-  mockSendCode,
-  mockVerifyCode,
+  mockLoginWithZeroTrust,
   mockIssueCliToken,
   mockListWorkspaces,
   mockListMyInvitations,
@@ -32,8 +31,7 @@ const {
   searchParamsState,
   authStateRef,
 } = vi.hoisted(() => ({
-  mockSendCode: vi.fn(),
-  mockVerifyCode: vi.fn(),
+  mockLoginWithZeroTrust: vi.fn(),
   mockIssueCliToken: vi.fn(),
   mockListWorkspaces: vi.fn(),
   mockListMyInvitations: vi.fn(),
@@ -42,8 +40,7 @@ const {
   searchParamsState: { params: new URLSearchParams() },
   authStateRef: {
     state: {
-      sendCode: vi.fn(),
-      verifyCode: vi.fn(),
+      loginWithZeroTrust: vi.fn(),
       user: null as null | { id: string; email: string; onboarded_at?: string | null },
       isLoading: false,
     },
@@ -58,8 +55,7 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => searchParamsState.params,
 }));
 
-// Mock auth store — shared LoginPage uses getState().sendCode/verifyCode,
-// web wrapper uses useAuthStore((s) => s.user/isLoading). Keep the real
+// Mock auth store. Keep the real
 // sanitizeNextUrl so the redirect-sanitization rules are exercised rather
 // than silently drifting behind a mock reimplementation.
 vi.mock("@multica/core/auth", async () => {
@@ -67,8 +63,7 @@ vi.mock("@multica/core/auth", async () => {
     await vi.importActual<typeof import("@multica/core/auth")>(
       "@multica/core/auth",
     );
-  authStateRef.state.sendCode = mockSendCode;
-  authStateRef.state.verifyCode = mockVerifyCode;
+  authStateRef.state.loginWithZeroTrust = mockLoginWithZeroTrust;
   const useAuthStore = Object.assign(
     (selector: (s: typeof authStateRef.state) => unknown) =>
       selector(authStateRef.state),
@@ -102,79 +97,42 @@ describe("LoginPage", () => {
     searchParamsState.params = new URLSearchParams();
     authStateRef.state.user = null;
     authStateRef.state.isLoading = false;
+    mockLoginWithZeroTrust.mockResolvedValue({
+      id: "u1",
+      email: "liyanzhen01@baidu.com",
+      name: "李彦珍",
+      onboarded_at: "2026-01-01T00:00:00Z",
+    });
     mockListWorkspaces.mockResolvedValue([]);
     mockListMyInvitations.mockResolvedValue([]);
   });
 
-  it("renders login form with email input and continue button", () => {
+  it("automatically authenticates through Baidu zero trust", async () => {
     render(<LoginPage />, { wrapper: createWrapper() });
-
-    expect(screen.getByText("Sign in to Multica")).toBeInTheDocument();
-    expect(screen.getByText("Enter your email to get a login code")).toBeInTheDocument();
-    expect(screen.getByLabelText("Email")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Continue" })
-    ).toBeInTheDocument();
-  });
-
-  it("does not call sendCode when email is empty", async () => {
-    const user = userEvent.setup();
-    render(<LoginPage />, { wrapper: createWrapper() });
-
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    expect(mockSendCode).not.toHaveBeenCalled();
-  });
-
-  it("calls sendCode with email on submit", async () => {
-    mockSendCode.mockResolvedValueOnce(undefined);
-    const user = userEvent.setup();
-    render(<LoginPage />, { wrapper: createWrapper() });
-
-    await user.type(screen.getByLabelText("Email"), "test@multica.ai");
-    await user.click(screen.getByRole("button", { name: "Continue" }));
 
     await waitFor(() => {
-      expect(mockSendCode).toHaveBeenCalledWith("test@multica.ai");
+      expect(mockLoginWithZeroTrust).toHaveBeenCalledTimes(1);
     });
+    expect(screen.getByText("百度内网登录")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Email")).not.toBeInTheDocument();
   });
 
-  it("shows 'Sending code...' while submitting", async () => {
-    mockSendCode.mockReturnValueOnce(new Promise(() => {}));
+  it("shows the authentication error and retries", async () => {
+    mockLoginWithZeroTrust.mockRejectedValue(
+      new Error("zero trust authentication failed"),
+    );
     const user = userEvent.setup();
     render(<LoginPage />, { wrapper: createWrapper() });
 
-    await user.type(screen.getByLabelText("Email"), "test@multica.ai");
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-
-    await waitFor(() => {
-      expect(screen.getByText("Sending code...")).toBeInTheDocument();
-    });
-  });
-
-  it("shows verification code step after sending code", async () => {
-    mockSendCode.mockResolvedValueOnce(undefined);
-    const user = userEvent.setup();
-    render(<LoginPage />, { wrapper: createWrapper() });
-
-    await user.type(screen.getByLabelText("Email"), "test@multica.ai");
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-
-    await waitFor(() => {
-      expect(screen.getByText("Check your email")).toBeInTheDocument();
-    });
-  });
-
-  it("shows error when sendCode fails", async () => {
-    mockSendCode.mockRejectedValueOnce(new Error("Network error"));
-    const user = userEvent.setup();
-    render(<LoginPage />, { wrapper: createWrapper() });
-
-    await user.type(screen.getByLabelText("Email"), "test@multica.ai");
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-
-    await waitFor(() => {
-      expect(screen.getByText("Network error")).toBeInTheDocument();
-    });
+    const retry = await screen.findByRole("button", { name: "重新登录" });
+    expect(screen.getByText("zero trust authentication failed")).toBeInTheDocument();
+    const attemptsBeforeRetry = mockLoginWithZeroTrust.mock.calls.length;
+    await user.click(retry);
+    await waitFor(() =>
+      expect(mockLoginWithZeroTrust.mock.calls.length).toBeGreaterThan(
+        attemptsBeforeRetry,
+      ),
+    );
   });
 
   // Regression: MUL-1080 — if the user is already authenticated on the web
@@ -217,35 +175,12 @@ describe("LoginPage", () => {
     }
   });
 
-  // Regression: #5009 — the "already authenticated on arrival" effect used to
-  // fire for fresh form logins too. verifyCode writes `user` while handleVerify
-  // is still fetching the workspace list, so the effect read an empty cache and
-  // raced handleSuccess with replace("/workspaces/new"); depending on the
-  // interleaving the user could end up stuck on the create-workspace page
-  // despite having workspaces.
-  describe("post-login redirect ownership (#5009)", () => {
+  describe("authenticated arrival redirects", () => {
     const onboardedUser = {
       id: "u1",
       email: "test@multica.ai",
       onboarded_at: "2026-01-01T00:00:00Z",
     };
-
-    it("does not redirect from the arrival effect when the user logs in via the form", async () => {
-      // Auth settles as logged-out first — the page latches "any user from
-      // now on came from the form".
-      const wrapper = createWrapper();
-      const { rerender } = render(<LoginPage />, { wrapper });
-      // verifyCode set the user; the workspace list fetch is still in flight
-      // (cache cold). The arrival effect must stay silent — handleSuccess
-      // owns this navigation.
-      authStateRef.state.user = onboardedUser;
-      rerender(<LoginPage />);
-
-      await act(async () => {});
-      expect(mockReplace).not.toHaveBeenCalled();
-      expect(mockPush).not.toHaveBeenCalled();
-      expect(mockListWorkspaces).not.toHaveBeenCalled();
-    });
 
     it("fetches the workspace list before redirecting a visitor who arrived authenticated", async () => {
       // Cold Query cache on a fresh page load: reading it would say "no

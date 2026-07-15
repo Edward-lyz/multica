@@ -1,10 +1,9 @@
 "use client";
 
-import { Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { sanitizeNextUrl, useAuthStore } from "@multica/core/auth";
-import { useConfigStore } from "@multica/core/config";
 import {
   workspaceKeys,
   workspaceListOptions,
@@ -27,7 +26,7 @@ import { Button } from "@multica/ui/components/ui/button";
 import { Loader2 } from "lucide-react";
 import { setLoggedInCookie } from "@/features/auth/auth-cookie";
 import Link from "next/link";
-import { LoginPage, validateCliCallback } from "@multica/views/auth";
+import { redirectToCliCallback, validateCliCallback } from "@multica/views/auth";
 import { useT } from "@multica/views/i18n";
 
 /**
@@ -60,7 +59,6 @@ function LoginPageContent() {
   const router = useRouter();
   const qc = useQueryClient();
   const { t } = useT("auth");
-  const googleClientId = useConfigStore((state) => state.googleClientId);
   const user = useAuthStore((s) => s.user);
   const isLoading = useAuthStore((s) => s.isLoading);
   const searchParams = useSearchParams();
@@ -78,6 +76,9 @@ function LoginPageContent() {
 
   const [desktopToken, setDesktopToken] = useState<string | null>(null);
   const [desktopError, setDesktopError] = useState("");
+  const [zeroTrustError, setZeroTrustError] = useState("");
+  const zeroTrustStartedRef = useRef(false);
+  const zeroTrustAutoAttemptedRef = useRef(false);
   const hasOnboarded = useHasOnboarded();
 
   // Latched once auth has been observed settled as logged-out on this page.
@@ -136,7 +137,7 @@ function LoginPageContent() {
       .then((dest) => router.replace(dest));
   }, [isLoading, user, router, nextUrl, cliCallbackRaw, isDesktopHandoff, hasOnboarded, qc]);
 
-  const handleSuccess = async () => {
+  const handleSuccess = useCallback(async () => {
     // Read the latest user snapshot directly — the closure's `hasOnboarded`
     // was captured before login completed and would be stale here.
     const currentUser = useAuthStore.getState().user;
@@ -147,23 +148,36 @@ function LoginPageContent() {
     }
     const list = qc.getQueryData<Workspace[]>(workspaceKeys.list()) ?? [];
     router.push(await resolveLoggedInDestination(qc, onboarded, list));
-  };
+  }, [nextUrl, qc, router]);
 
-  // Build Google OAuth state: encode platform, next URL, and CLI callback
-  // params so the callback can redirect to the right place after login.
-  // CLI callback/state must survive the Google OAuth round-trip so the
-  // post-login callback page can redirect the JWT back to the CLI's local
-  // HTTP listener (critical for headless / WSL2 environments).
-  const googleState = [
-    platform === "desktop" ? "platform:desktop" : "",
-    nextUrl ? `next:${nextUrl}` : "",
-    cliCallbackRaw && validateCliCallback(cliCallbackRaw)
-      ? `cli_callback:${encodeURIComponent(cliCallbackRaw)}`
-      : "",
-    cliState ? `cli_state:${encodeURIComponent(cliState)}` : "",
-  ]
-    .filter(Boolean)
-    .join(",") || undefined;
+  const startZeroTrustLogin = useCallback(async () => {
+    if (zeroTrustStartedRef.current) return;
+    zeroTrustStartedRef.current = true;
+    setZeroTrustError("");
+    try {
+      await useAuthStore.getState().loginWithZeroTrust();
+      setLoggedInCookie();
+      if (cliCallbackRaw && validateCliCallback(cliCallbackRaw)) {
+        const { token } = await api.issueCliToken();
+        redirectToCliCallback(cliCallbackRaw, token, cliState);
+        return;
+      }
+      if (isDesktopHandoff) return;
+      const workspaces = await api.listWorkspaces();
+      qc.setQueryData(workspaceKeys.list(), workspaces);
+      await handleSuccess();
+    } catch (err) {
+      zeroTrustStartedRef.current = false;
+      setZeroTrustError(err instanceof Error ? err.message : "Zero Trust login failed");
+    }
+  }, [cliCallbackRaw, cliState, handleSuccess, isDesktopHandoff, qc]);
+
+  useEffect(() => {
+    if (!isLoading && !user && !zeroTrustAutoAttemptedRef.current) {
+      zeroTrustAutoAttemptedRef.current = true;
+      void startZeroTrustLogin();
+    }
+  }, [isLoading, user, startZeroTrustLogin]);
 
   // While the desktop handoff is in progress (or has produced a token/error),
   // render a dedicated screen instead of flashing the login form or redirecting
@@ -216,35 +230,29 @@ function LoginPageContent() {
   }
 
   return (
-    <LoginPage
-      onSuccess={handleSuccess}
-      google={
-        googleClientId
-          ? {
-              clientId: googleClientId,
-              redirectUri: `${window.location.origin}/auth/callback`,
-              state: googleState,
-            }
-          : undefined
-      }
-      cliCallback={
-        cliCallbackRaw && validateCliCallback(cliCallbackRaw)
-          ? { url: cliCallbackRaw, state: cliState }
-          : undefined
-      }
-      onTokenObtained={setLoggedInCookie}
-      extra={
-        <span className="text-xs text-muted-foreground">
-          {t(($) => $.web.prefer_desktop)}{" "}
+    <div className="flex min-h-screen items-center justify-center">
+      <Card className="w-full max-w-sm">
+        <CardHeader className="text-center">
+          <CardTitle className="text-2xl">百度内网登录</CardTitle>
+          <CardDescription>
+            {zeroTrustError || "正在验证 UUAP 身份…"}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col items-center gap-4">
+          {zeroTrustError ? (
+            <Button onClick={() => void startZeroTrustLogin()}>重新登录</Button>
+          ) : (
+            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+          )}
           <Link
             href="/download"
-            className="font-medium text-foreground underline decoration-foreground/30 underline-offset-4 hover:decoration-foreground/70"
+            className="text-xs text-muted-foreground underline underline-offset-4"
           >
             {t(($) => $.web.download)}
           </Link>
-        </span>
-      }
-    />
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 

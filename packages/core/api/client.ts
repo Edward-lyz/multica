@@ -484,6 +484,10 @@ export class ApiClient {
     });
   }
 
+  async zeroTrustLogin(): Promise<LoginResponse> {
+    return this.fetch("/auth/zerotrust", { method: "POST" });
+  }
+
   async logout(): Promise<void> {
     await this.fetch("/auth/logout", { method: "POST" });
   }
