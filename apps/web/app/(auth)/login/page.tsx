@@ -79,6 +79,7 @@ function LoginPageContent() {
   const [zeroTrustError, setZeroTrustError] = useState("");
   const zeroTrustStartedRef = useRef(false);
   const zeroTrustAutoAttemptedRef = useRef(false);
+  const cliHandoffStartedRef = useRef(false);
   const hasOnboarded = useHasOnboarded();
 
   // Latched once auth has been observed settled as logged-out on this page.
@@ -158,6 +159,8 @@ function LoginPageContent() {
       await useAuthStore.getState().loginWithZeroTrust();
       setLoggedInCookie();
       if (cliCallbackRaw && validateCliCallback(cliCallbackRaw)) {
+        if (cliHandoffStartedRef.current) return;
+        cliHandoffStartedRef.current = true;
         const { token } = await api.issueCliToken();
         redirectToCliCallback(cliCallbackRaw, token, cliState);
         return;
@@ -178,6 +181,30 @@ function LoginPageContent() {
       void startZeroTrustLogin();
     }
   }, [isLoading, user, startZeroTrustLogin]);
+
+  // A browser that already has a Multica session skips zero-trust login, but
+  // CLI authorization still needs to mint a bearer token and return it to the
+  // callback listener. Without this path, an authenticated user stays on the
+  // loading card forever.
+  useEffect(() => {
+    if (
+      isLoading ||
+      !user ||
+      !cliCallbackRaw ||
+      !validateCliCallback(cliCallbackRaw) ||
+      cliHandoffStartedRef.current
+    ) {
+      return;
+    }
+    cliHandoffStartedRef.current = true;
+    api
+      .issueCliToken()
+      .then(({ token }) => redirectToCliCallback(cliCallbackRaw, token, cliState))
+      .catch((err) => {
+        cliHandoffStartedRef.current = false;
+        setZeroTrustError(err instanceof Error ? err.message : "CLI authorization failed");
+      });
+  }, [cliCallbackRaw, cliState, isLoading, user]);
 
   // While the desktop handoff is in progress (or has produced a token/error),
   // render a dedicated screen instead of flashing the login form or redirecting

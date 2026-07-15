@@ -2,10 +2,10 @@
 # Multica installer — installs the CLI and optionally provisions a self-host server.
 #
 # Install / upgrade CLI only:
-#   curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Edward-lyz/multica/main/scripts/install.sh | bash
 #
 # Install CLI + provision self-host server:
-#   curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash -s -- --with-server
+#   curl -fsSL https://raw.githubusercontent.com/Edward-lyz/multica/main/scripts/install.sh | bash -s -- --with-server
 #
 # After installation, run `multica setup` to configure your environment.
 #
@@ -14,10 +14,9 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-REPO_URL="https://github.com/multica-ai/multica.git"
-REPO_WEB_URL="https://github.com/multica-ai/multica"  # without .git, for GitHub web APIs
+REPO_URL="https://github.com/Edward-lyz/multica.git"
+REPO_WEB_URL="https://github.com/Edward-lyz/multica"  # without .git, for GitHub web APIs
 INSTALL_DIR="${MULTICA_INSTALL_DIR:-$HOME/.multica/server}"
-BREW_PACKAGE="multica-ai/tap/multica"
 
 # Colors (disabled when not a terminal)
 if [ -t 1 ] || [ -t 2 ]; then
@@ -52,7 +51,7 @@ print_remote_server_token_hint() {
 
   printf "  ${BOLD}Looks like a remote/SSH session.${RESET} Browser login may not be able to call back to this machine's localhost.\n"
   printf "  Token login is usually simpler here:\n"
-  printf "     1. On your local computer, open ${CYAN}https://multica.ai/settings?tab=tokens${RESET}\n"
+  printf "     1. On your local computer, open ${CYAN}https://multica.n.baidu-int.com/settings?tab=tokens${RESET}\n"
   printf "        and create a token under ${BOLD}Settings > API Tokens${RESET}.\n"
   printf "     2. On this server, run:\n"
   printf "        ${CYAN}multica login --token <YOUR_TOKEN>${RESET}\n"
@@ -106,7 +105,7 @@ detect_os() {
     Linux)  OS="linux" ;;
     MINGW*|MSYS*|CYGWIN*)
             fail "This script does not support Windows. Use the PowerShell installer instead:
-  irm https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.ps1 | iex" ;;
+  irm https://raw.githubusercontent.com/Edward-lyz/multica/main/scripts/install.ps1 | iex" ;;
     *)      fail "Unsupported operating system: $(uname -s). Multica supports macOS, Linux, and Windows." ;;
   esac
 
@@ -122,41 +121,6 @@ detect_os() {
 # ---------------------------------------------------------------------------
 # CLI Installation
 # ---------------------------------------------------------------------------
-_dump_brew_log() {
-  local log="$1"
-  if [ -s "$log" ]; then
-    warn "Homebrew output (last 80 lines):"
-    tail -n 80 "$log" | sed 's/^/  /' >&2
-  fi
-}
-
-install_cli_brew() {
-  info "Installing Multica CLI via Homebrew..."
-  local brew_log
-  brew_log=$(mktemp)
-  if ! brew tap multica-ai/tap >"$brew_log" 2>&1; then
-    warn "Failed to add Homebrew tap. Falling back to GitHub Releases binary install."
-    _dump_brew_log "$brew_log"
-    rm -f "$brew_log"
-    return 1
-  fi
-  # brew install exits non-zero if already installed on older Homebrew versions
-  if ! brew install "$BREW_PACKAGE" >"$brew_log" 2>&1; then
-    if brew list "$BREW_PACKAGE" >/dev/null 2>&1; then
-      rm -f "$brew_log"
-      ok "Multica CLI already installed via Homebrew"
-    else
-      warn "Failed to install multica via Homebrew. Falling back to GitHub Releases binary install."
-      _dump_brew_log "$brew_log"
-      rm -f "$brew_log"
-      return 1
-    fi
-  else
-    rm -f "$brew_log"
-    ok "Multica CLI installed via Homebrew"
-  fi
-}
-
 install_cli_binary() {
   info "Installing Multica CLI from GitHub Releases..."
 
@@ -168,7 +132,7 @@ install_cli_binary() {
   fi
 
   local version="${latest#v}"
-  local url="https://github.com/multica-ai/multica/releases/download/${latest}/multica-cli-${version}-${OS}-${ARCH}.tar.gz"
+  local url="${REPO_WEB_URL}/releases/download/${latest}/multica-cli-${version}-${OS}-${ARCH}.tar.gz"
   local tmp_dir
   tmp_dir=$(mktemp -d)
 
@@ -267,17 +231,6 @@ pull_official_selfhost_images() {
   exit 1
 }
 
-upgrade_cli_brew() {
-  info "Upgrading Multica CLI via Homebrew..."
-  brew update 2>/dev/null || true
-  if brew upgrade "$BREW_PACKAGE" 2>/dev/null; then
-    ok "Multica CLI upgraded via Homebrew"
-  else
-    # brew upgrade exits non-zero if already up to date
-    ok "Multica CLI is already the latest version"
-  fi
-}
-
 install_cli() {
   if command_exists multica; then
     local current_ver
@@ -297,11 +250,7 @@ install_cli() {
     fi
 
     info "Multica CLI $current_ver installed, latest is $latest_ver — upgrading..."
-    if command_exists brew && brew list "$BREW_PACKAGE" >/dev/null 2>&1; then
-      upgrade_cli_brew
-    else
-      install_cli_binary
-    fi
+    install_cli_binary
 
     local new_ver
     new_ver=$(multica version 2>/dev/null | awk 'NR==1{print $2}' || echo "unknown")
@@ -309,11 +258,7 @@ install_cli() {
     return 0
   fi
 
-  if command_exists brew; then
-    install_cli_brew || install_cli_binary
-  else
-    install_cli_binary
-  fi
+  install_cli_binary
 
   # Verify
   if ! command_exists multica; then
@@ -447,7 +392,7 @@ run_default() {
   printf "\n"
   print_remote_server_token_hint
   printf "  ${BOLD}Self-hosting?${RESET} Install the server first:\n"
-  printf "     curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash -s -- --with-server\n"
+  printf "     curl -fsSL https://raw.githubusercontent.com/Edward-lyz/multica/main/scripts/install.sh | bash -s -- --with-server\n"
   printf "\n"
 }
 
@@ -485,7 +430,7 @@ run_with_server() {
   printf "  or read the generated code from backend logs when Resend is unset.\n"
   printf "\n"
   printf "  ${BOLD}To stop all services:${RESET}\n"
-  printf "     curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash -s -- --stop\n"
+  printf "     curl -fsSL https://raw.githubusercontent.com/Edward-lyz/multica/main/scripts/install.sh | bash -s -- --stop\n"
   printf "\n"
 }
 

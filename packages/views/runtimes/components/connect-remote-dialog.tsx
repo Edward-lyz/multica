@@ -26,7 +26,7 @@ import { useT } from "../../i18n";
 type Step = "instructions" | "success";
 
 const INSTALL_CMD =
-  "curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash";
+  "curl -fsSL https://raw.githubusercontent.com/Edward-lyz/multica/main/scripts/install.sh | bash";
 const CLOUD_SERVER_URL = "https://api.multica.ai";
 const CLOUD_APP_URL = "https://multica.ai";
 

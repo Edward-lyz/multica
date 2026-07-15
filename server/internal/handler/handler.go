@@ -58,6 +58,10 @@ type Config struct {
 	AllowSignup         bool
 	AllowedEmails       []string
 	AllowedEmailDomains []string
+	// ZeroTrustDefaultWorkspaceSlug, when set, makes every user authenticated
+	// by the Baidu zero-trust gateway a member of that workspace and marks
+	// onboarding complete. Users can still create additional workspaces.
+	ZeroTrustDefaultWorkspaceSlug string
 	// DisableWorkspaceCreation, when true, makes POST /api/workspaces return
 	// 403 for every caller. There is no role/owner exception because the repo
 	// has no platform-admin concept; operators bootstrap the workspace with

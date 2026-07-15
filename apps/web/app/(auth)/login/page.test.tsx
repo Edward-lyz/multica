@@ -135,6 +135,39 @@ describe("LoginPage", () => {
     );
   });
 
+  it("returns a CLI token when the browser session is already authenticated", async () => {
+    searchParamsState.params = new URLSearchParams({
+      cli_callback: "http://localhost:58588/callback",
+      cli_state: "state-123",
+    });
+    authStateRef.state.user = { id: "u1", email: "test@multica.ai" };
+    mockIssueCliToken.mockResolvedValue({ token: "cli-jwt" });
+
+    const hrefSetter = vi.fn();
+    const originalLocation = window.location;
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...originalLocation, set href(value: string) { hrefSetter(value); } },
+    });
+
+    try {
+      render(<LoginPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(mockIssueCliToken).toHaveBeenCalledTimes(1);
+        expect(hrefSetter).toHaveBeenCalledWith(
+          "http://localhost:58588/callback?token=cli-jwt&state=state-123",
+        );
+      });
+      expect(mockLoginWithZeroTrust).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: originalLocation,
+      });
+    }
+  });
+
   // Regression: MUL-1080 — if the user is already authenticated on the web
   // and the Desktop app redirects them to /login?platform=desktop, the web
   // must exchange the cookie session for a bearer token and hand it off via
