@@ -461,6 +461,114 @@ type googleUserInfo struct {
 	Picture string `json:"picture"`
 }
 
+type zeroTrustClaims struct {
+	Username string `json:"username"`
+	Name     string `json:"name"`
+	Email    string `json:"email"`
+	jwt.RegisteredClaims
+}
+
+func verifyZeroTrustToken(tokenString, secret string) (*zeroTrustClaims, error) {
+	if strings.TrimSpace(tokenString) == "" || strings.TrimSpace(secret) == "" {
+		return nil, errors.New("zero trust token or secret is missing")
+	}
+
+	token, err := jwt.ParseWithClaims(
+		tokenString,
+		&zeroTrustClaims{},
+		func(token *jwt.Token) (any, error) {
+			if token.Method != jwt.SigningMethodHS256 {
+				return nil, fmt.Errorf("unexpected signing method %s", token.Method.Alg())
+			}
+			return []byte(secret), nil
+		},
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+		jwt.WithExpirationRequired(),
+		jwt.WithIssuedAt(),
+	)
+	if err != nil || !token.Valid {
+		return nil, errors.New("invalid zero trust token")
+	}
+	claims, ok := token.Claims.(*zeroTrustClaims)
+	if !ok || claims.IssuedAt == nil || strings.TrimSpace(claims.Username) == "" {
+		return nil, errors.New("zero trust token has no username")
+	}
+	return claims, nil
+}
+
+// ZeroTrustLogin exchanges the gateway-signed identity header for Multica's
+// own session cookie. X-Zt-Authorization is injected by Baidu's zero-trust
+// gateway and is never accepted without verifying its per-domain HS256 key.
+func (h *Handler) ZeroTrustLogin(w http.ResponseWriter, r *http.Request) {
+	secret := strings.TrimSpace(os.Getenv("ZEROTRUST_JWT_SECRET"))
+	if secret == "" {
+		writeError(w, http.StatusServiceUnavailable, "zero trust login is not configured")
+		return
+	}
+
+	claims, err := verifyZeroTrustToken(r.Header.Get("X-Zt-Authorization"), secret)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "zero trust authentication failed")
+		return
+	}
+
+	username := strings.ToLower(strings.TrimSpace(claims.Username))
+	for _, ch := range username {
+		if !((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-') {
+			writeError(w, http.StatusUnauthorized, "zero trust username is invalid")
+			return
+		}
+	}
+	// UUAP guarantees username but not email. Multica keys users by email, so
+	// derive one stable identity from the guaranteed claim instead of letting a
+	// missing or later-changed optional email claim create duplicate accounts.
+	email := username + "@baidu.com"
+
+	user, isNew, err := h.findOrCreateUser(r.Context(), email)
+	if err != nil {
+		var signupErr SignupError
+		if errors.As(err, &signupErr) {
+			writeError(w, http.StatusForbidden, signupErr.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to create user")
+		return
+	}
+	if isNew {
+		evt := analytics.Signup(uuidToString(user.ID), user.Email, signupSourceFromRequest(r))
+		evt.Properties["auth_method"] = "zerotrust"
+		obsmetrics.RecordEvent(h.Analytics, h.Metrics, evt)
+	}
+
+	name := strings.TrimSpace(claims.Name)
+	if name != "" && (isNew || user.Name == username) {
+		updated, updateErr := h.Queries.UpdateUser(r.Context(), db.UpdateUserParams{ID: user.ID, Name: name, AvatarUrl: user.AvatarUrl})
+		if updateErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update user")
+			return
+		}
+		user = updated
+	}
+
+	tokenString, err := h.issueJWT(user)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to generate token")
+		return
+	}
+	if err := auth.SetAuthCookies(w, tokenString); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create session")
+		return
+	}
+	if h.CFSigner != nil {
+		for _, cookie := range h.CFSigner.SignedCookies(time.Now().Add(auth.AuthTokenTTL())) {
+			http.SetCookie(w, cookie)
+		}
+	}
+
+	slog.Info("user logged in via zero trust", append(logger.RequestAttrs(r), "user_id", uuidToString(user.ID), "username", username)...)
+	writeJSON(w, http.StatusOK, LoginResponse{Token: tokenString, User: userToResponse(user)})
+}
+
 func (h *Handler) GoogleLogin(w http.ResponseWriter, r *http.Request) {
 	var req GoogleLoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
